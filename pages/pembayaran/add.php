@@ -5,6 +5,18 @@
  */
 
 $page_title = 'Input Pembayaran';
+$extra_css = '
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/style.css">
+<style>
+.flatpickr-calendar.open { z-index: 1060; }
+.flatpickr-monthSelect-months { display: flex; flex-wrap: wrap; padding: 4px; margin: 6px 0 2px; }
+.flatpickr-monthSelect-month { flex: 0 0 33.333%; max-width: 33.333%; width: auto; margin: 0; padding: 9px 0; font-size: 0.85rem; }
+.periode-picker { background-color: #fff !important; cursor: pointer; }
+.periode-picker:disabled { background-color: #e9ecef !important; cursor: default; }
+.periode-info { min-height: 1.2em; }
+</style>
+';
 require_once '../../includes/header.php';
 
 // Block kepala_tpq from accessing this page
@@ -31,10 +43,24 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $id_user = (int) $_SESSION['id_user'];
 
     $pilih_item = $_POST['pilih_item'] ?? [];
-    $bulan_dibayar = $_POST['bulan_dibayar'] ?? [];
-    $bulan_akhir_dibayar = $_POST['bulan_akhir'] ?? [];
+    // Bulanan: SATU rentang periode (format YYYY-MM) dari flatpickr yang berlaku untuk semua iuran
+    $periode_awal_global = trim((string) ($_POST['periode_awal'] ?? ''));
+    $periode_akhir_global = trim((string) ($_POST['periode_akhir'] ?? ''));
+    // Tahunan: tahun dibayar (per item)
     $tahun_dibayar = $_POST['tahun_dibayar'] ?? [];
     $jumlah_bayar = $_POST['jumlah_bayar'] ?? [];
+
+    $periode_list_bulanan = [];
+    if ($mode === 'bulanan') {
+        if ($periode_awal_global === '') {
+            $errors[] = 'Periode bulan harus dipilih.';
+        } else {
+            $periode_list_bulanan = expandPeriodeBulanan($periode_awal_global, $periode_akhir_global);
+            if (empty($periode_list_bulanan)) {
+                $errors[] = 'Rentang periode tidak valid (maksimal 36 bulan).';
+            }
+        }
+    }
 
 
     if ($id_santri <= 0)
@@ -93,10 +119,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $errors[] = 'Tagihan ' . $iuran['nama_iuran'] . ' tidak sesuai mode pembayaran saat ini.';
                 continue;
             }
-            $tahun = sanitize($tahun_dibayar[$id_iuran] ?? '');
-            $bulan_awal = $mode === 'bulanan' ? sanitize($bulan_dibayar[$id_iuran] ?? '') : '-';
-            $bulan_akhir = $mode === 'bulanan' ? sanitize($bulan_akhir_dibayar[$id_iuran] ?? '') : '';
-
             $jumlah_raw = str_replace(['.', ','], '', (string) ($jumlah_bayar[$id_iuran] ?? '0'));
             $jumlah = (float) $jumlah_raw;
 
@@ -105,31 +127,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 continue;
             }
 
-            if (empty($tahun)) {
-                $errors[] = 'Tahun dibayar untuk ' . $iuran['nama_iuran'] . ' harus diisi.';
-                continue;
-            }
-
-            $semua_bulan = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
-            $bulan_list_process = [];
-            
-            if ($mode === 'bulanan' && !empty($bulan_awal)) {
-                $idx_awal = array_search($bulan_awal, $semua_bulan);
-                $idx_akhir = empty($bulan_akhir) ? $idx_awal : array_search($bulan_akhir, $semua_bulan);
-                
-                if ($idx_awal === false || $idx_akhir === false || $idx_akhir < $idx_awal) {
-                    $bulan_list_process = [$bulan_awal];
-                } else {
-                    for ($i = $idx_awal; $i <= $idx_akhir; $i++) {
-                        $bulan_list_process[] = $semua_bulan[$i];
-                    }
-                }
+            // Build list of periods to process: [['bulan' => ..., 'tahun' => ..., 'periode_key' => ...], ...]
+            $periode_list_process = [];
+            if ($mode === 'bulanan') {
+                $periode_list_process = $periode_list_bulanan;
             } else {
-                $bulan_list_process = ['-'];
+                $tahun = preg_replace('/\D/', '', (string) ($tahun_dibayar[$id_iuran] ?? ''));
+                if (empty($tahun)) {
+                    $errors[] = 'Tahun dibayar untuk ' . $iuran['nama_iuran'] . ' harus diisi.';
+                    continue;
+                }
+                $periode_list_process[] = ['bulan' => '-', 'tahun' => $tahun, 'periode_key' => buildPeriodeKey('tahunan', $tahun)];
             }
 
-            foreach ($bulan_list_process as $bln) {
-                $periode_key = buildPeriodeKey($periode_tipe, $tahun, $bln);
+            foreach ($periode_list_process as $periode) {
+                $bln = $periode['bulan'];
+                $tahun = $periode['tahun'];
+                $periode_key = $periode['periode_key'];
                 if (empty($periode_key)) {
                     $errors[] = 'Periode pembayaran untuk ' . $iuran['nama_iuran'] . ' tidak valid.';
                     continue;
@@ -147,7 +161,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $nominal = (float) $iuran['nominal'];
 
                 if (($sudah_bayar + $jumlah) > $nominal) {
-                    $nama_bln = $bln !== '-' ? " ($bln)" : "";
+                    $nama_bln = $bln !== '-' ? " ($bln $tahun)" : " ($tahun)";
                     $errors[] = 'Pembayaran ' . $iuran['nama_iuran'] . $nama_bln . ' melebihi nominal periode. Sisa maksimal: ' . formatRupiah($nominal - $sudah_bayar) . '.';
                     continue;
                 }
@@ -295,6 +309,14 @@ $bulan_list = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', '
                             </select>
                         </div>
 
+                        <div class="form-group" id="periodeGlobalGroup" style="display:none;">
+                            <label>Periode Bulan <span class="text-danger">*</span> <small class="text-muted font-weight-normal">(berlaku untuk semua iuran bulanan yang dicentang)</small></label>
+                            <input type="text" class="form-control periode-picker" id="periodeGlobal" placeholder="Klik untuk pilih bulan / rentang bulan..." readonly>
+                            <input type="hidden" name="periode_awal" id="periode_awal" value="">
+                            <input type="hidden" name="periode_akhir" id="periode_akhir" value="">
+                            <small class="form-text text-muted periode-info" id="periodeGlobalInfo"></small>
+                        </div>
+
                         <div class="form-group">
                             <label>Tagihan Aktif <span class="text-danger">*</span></label>
                             <div id="tagihanContainer" class="border rounded p-3 bg-light">
@@ -350,17 +372,11 @@ $bulan_list = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', '
 
 <?php
 $extra_js = '
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/id.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/index.js"></script>
 <script>
 const bulanList = ' . json_encode($bulan_list) . ';
-
-function buildBulanOptions(selected) {
-    let html = "<option value=\"\">-- Pilih Bulan --</option>";
-    bulanList.forEach((bulan) => {
-        const selectedAttr = selected === bulan ? "selected" : "";
-        html += `<option value="${bulan}" ${selectedAttr}>${bulan}</option>`;
-    });
-    return html;
-}
 
 function formatRupiahJs(number) {
     return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0 }).format(number || 0);
@@ -405,39 +421,28 @@ function renderTagihan(items, mode) {
                             ${item.nama_iuran} (${isBulanan ? "Bulanan" : "Tahunan"})
                         </label>
                     </div>
-                    <div class="small text-muted mb-2">Nominal tagihan: ${formatRupiahJs(item.nominal)} | Sudah bayar periode default: ${formatRupiahJs(item.sudah_bayar)} | Sisa: ${formatRupiahJs(item.sisa_tagihan)}</div>
+                    <div class="small text-muted mb-2">Nominal tagihan: ${formatRupiahJs(item.nominal)} | Sudah bayar bulan ini: ${formatRupiahJs(item.sudah_bayar)} | Sisa: ${formatRupiahJs(item.sisa_tagihan)}</div>
 
                     <input type="hidden" name="periode_tipe[${item.id_iuran}]" value="${item.periode_tipe}">
-                    ${isBulanan ? "" : `<input type="hidden" name="bulan_dibayar[${item.id_iuran}]" value="-">`}
 
                     <div class="form-row">
-                        ${isBulanan ? `
-                        <div class="col-md-3 mb-2">
-                            <label class="small mb-1">Bulan Mulai</label>
-                            <select class="form-control form-control-sm item-field" name="bulan_dibayar[${item.id_iuran}]" data-item="${item.id_iuran}" ${disabledAttr}>
-                                ${buildBulanOptions(item.default_bulan || "")}
-                            </select>
-                        </div>
-                        <div class="col-md-3 mb-2">
-                            <label class="small mb-1">s/d Akhir</label>
-                            <select class="form-control form-control-sm item-field" name="bulan_akhir[${item.id_iuran}]" data-item="${item.id_iuran}" ${disabledAttr}>
-                                <option value="">-- Sama --</option>
-                                ${buildBulanOptions("")}
-                            </select>
-                        </div>` : ""}
-
-                        <div class="${isBulanan ? "col-md-2" : "col-md-4"} mb-2">
+                        ${isBulanan ? "" : `
+                        <div class="col-md-4 mb-2">
                             <label class="small mb-1">Tahun</label>
                             <input type="number" class="form-control form-control-sm item-field" name="tahun_dibayar[${item.id_iuran}]" value="${item.default_tahun || currentYear}" min="2020" max="2100" data-item="${item.id_iuran}" ${disabledAttr}>
-                        </div>
+                        </div>`}
 
-                        <div class="${isBulanan ? "col-md-4" : "col-md-8"} mb-2">
-                            <label class="small mb-1">Jml/Bln</label>
+                        <div class="${isBulanan ? "col-md-6" : "col-md-8"} mb-2">
+                            <label class="small mb-1">${isBulanan ? "Jumlah per Bulan" : "Jumlah"}</label>
                             <div class="input-group input-group-sm">
                                 <div class="input-group-prepend"><span class="input-group-text">Rp</span></div>
-                                <input type="text" class="form-control item-field" name="jumlah_bayar[${item.id_iuran}]" value="${new Intl.NumberFormat("id-ID").format(defaultAmount)}" data-item="${item.id_iuran}" onkeyup="formatCurrency(this)" ${disabledAttr}>
+                                <input type="text" class="form-control item-field jumlah-field" name="jumlah_bayar[${item.id_iuran}]" id="jumlah_${item.id_iuran}" value="${new Intl.NumberFormat("id-ID").format(defaultAmount)}" data-item="${item.id_iuran}" onkeyup="formatCurrency(this); updatePeriodeInfo();" ${disabledAttr}>
                             </div>
                         </div>
+                        ${isBulanan ? `
+                        <div class="col-md-6 mb-2 d-flex align-items-end">
+                            <small class="text-muted item-subtotal" data-item="${item.id_iuran}"></small>
+                        </div>` : ""}
                     </div>
                 </div>
             </div>
@@ -455,13 +460,118 @@ function renderTagihan(items, mode) {
                     field.focus();
                 }
             });
+            updatePeriodeInfo();
         });
     });
+
+    updatePeriodeInfo();
+}
+
+// ===== Flatpickr month-range picker: SATU picker untuk semua iuran bulanan =====
+let periodeGlobalPicker = null;
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+function toPeriodeKey(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1); }
+function periodeKeyToDate(key) {
+    const m = /^(\d{4})-(\d{2})$/.exec(key || "");
+    return m ? new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, 1) : null;
+}
+function monthsBetween(a, b) {
+    return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + 1;
+}
+function parseRupiah(str) {
+    return parseInt(String(str || "").replace(/[^\d]/g, ""), 10) || 0;
+}
+
+function getPeriodeGlobalCount() {
+    const awal = periodeKeyToDate(document.getElementById("periode_awal").value);
+    const akhir = periodeKeyToDate(document.getElementById("periode_akhir").value) || awal;
+    return awal ? monthsBetween(awal, akhir) : 0;
+}
+
+function updatePeriodeInfo() {
+    const isBulanan = (document.getElementById("modeSelect").value || "tahunan") === "bulanan";
+    const info = document.getElementById("periodeGlobalInfo");
+    if (!isBulanan) { if (info) info.textContent = ""; return; }
+
+    const n = getPeriodeGlobalCount();
+    let grand = 0;
+    document.querySelectorAll(".item-subtotal").forEach((el) => {
+        const id = el.getAttribute("data-item");
+        const cb = document.getElementById("check_" + id);
+        const perBulan = parseRupiah((document.getElementById("jumlah_" + id) || {}).value);
+        if (cb && cb.checked && n > 0 && perBulan > 0) {
+            const sub = n * perBulan;
+            grand += sub;
+            el.innerHTML = `${n} bulan &times; ${formatRupiahJs(perBulan)} = <strong>${formatRupiahJs(sub)}</strong>`;
+        } else {
+            el.textContent = "";
+        }
+    });
+
+    if (!info) return;
+    if (n <= 0) { info.textContent = ""; return; }
+    info.innerHTML = `<i class="fas fa-calendar-check mr-1"></i>${n} bulan dipilih` + (grand > 0 ? ` &nbsp;|&nbsp; Total semua iuran tercentang: <strong>${formatRupiahJs(grand)}</strong>` : "");
+}
+
+function initPeriodeGlobalPicker() {
+    const input = document.getElementById("periodeGlobal");
+    const hiddenAwal = document.getElementById("periode_awal");
+    const hiddenAkhir = document.getElementById("periode_akhir");
+    const defaultDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+    if (periodeGlobalPicker) { return; }
+
+    periodeGlobalPicker = flatpickr(input, {
+        mode: "range",
+        locale: "id",
+        disableMobile: true,
+        defaultDate: [defaultDate, defaultDate],
+        plugins: [new monthSelectPlugin({ shorthand: false, dateFormat: "F Y", altFormat: "F Y", theme: "light" })],
+        onChange: function(selectedDates) {
+            if (selectedDates.length === 0) {
+                hiddenAwal.value = ""; hiddenAkhir.value = "";
+            } else if (selectedDates.length === 1) {
+                hiddenAwal.value = toPeriodeKey(selectedDates[0]);
+                hiddenAkhir.value = hiddenAwal.value;
+            } else {
+                hiddenAwal.value = toPeriodeKey(selectedDates[0]);
+                hiddenAkhir.value = toPeriodeKey(selectedDates[1]);
+            }
+            updatePeriodeInfo();
+        },
+        onClose: function(selectedDates, dateStr, fp) {
+            // Jika hanya 1 bulan diklik lalu ditutup, anggap rentang 1 bulan (bukan dikosongkan).
+            if (selectedDates.length === 1) {
+                fp.setDate([selectedDates[0], selectedDates[0]], true);
+            }
+        }
+    });
+
+    // Set nilai awal (1 bulan = bulan berjalan)
+    hiddenAwal.value = toPeriodeKey(defaultDate);
+    hiddenAkhir.value = toPeriodeKey(defaultDate);
+    updatePeriodeInfo();
+}
+
+function togglePeriodeGlobal(mode) {
+    const group = document.getElementById("periodeGlobalGroup");
+    const isBulanan = mode === "bulanan";
+    group.style.display = isBulanan ? "" : "none";
+    if (isBulanan) {
+        initPeriodeGlobalPicker();
+    } else {
+        // Kosongkan agar tidak ikut terkirim saat mode tahunan
+        document.getElementById("periode_awal").value = "";
+        document.getElementById("periode_akhir").value = "";
+    }
+    updatePeriodeInfo();
 }
 
 function loadTagihan() {
     const siswaSelect = document.getElementById("siswaSelect");
     const mode = document.getElementById("modeSelect").value || "tahunan";
+    togglePeriodeGlobal(mode);
     const id_santri = siswaSelect.value;
     const option = siswaSelect.options[siswaSelect.selectedIndex];
     const kelas = option ? option.getAttribute("data-kelas") : "";
@@ -516,14 +626,23 @@ document.getElementById("siswaSelect").addEventListener("change", loadTagihan);
 document.getElementById("modeSelect").addEventListener("change", loadTagihan);
 
 document.getElementById("formPembayaranBatch").addEventListener("submit", function(e) {
-    const checked = document.querySelectorAll(".item-check:checked").length;
-    if (checked === 0) {
+    const checkedItems = document.querySelectorAll(".item-check:checked");
+    if (checkedItems.length === 0) {
         e.preventDefault();
         toastr.warning("Pilih minimal 1 item tagihan yang akan dibayar.", "Pilih Tagihan");
+        return;
+    }
+    // Validasi periode untuk mode bulanan
+    const mode = document.getElementById("modeSelect").value || "tahunan";
+    if (mode === "bulanan" && !document.getElementById("periode_awal").value) {
+        e.preventDefault();
+        toastr.warning("Pilih periode bulan terlebih dahulu.", "Periode Kosong");
+        return;
     }
 });
 
 filterSantriByKelas();
+togglePeriodeGlobal(document.getElementById("modeSelect").value || "tahunan");
 
 if (document.getElementById("siswaSelect").value) {
     loadTagihan();
