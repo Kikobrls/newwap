@@ -377,9 +377,6 @@ if ($filter_kelas > 0 || $is_all_kelas) {
                                             </table>
                                         </div>
                                     </div>
-                                    <div class="card-footer bg-white text-muted small text-center border-top-0">
-                                        Hanya santri yang dicentang yang akan diproses transaksinya. Pengecekan lunas tidak bisa dilakukan massal karena Sisa Terutang setiap siswa berbeda bergantung pada riwayat masing-masing.
-                                    </div>
                                 </div>
                             </div>
                         </div>
