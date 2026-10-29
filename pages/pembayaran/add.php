@@ -8,7 +8,11 @@ $page_title = 'Input Pembayaran';
 $extra_css = '
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css">
 <style>
+.select2-container--bootstrap-5 .select2-selection { min-height: calc(1.5em + .875rem + 2px); }
+.select2-santri-kelas { font-size: .8rem; color: #69707a; }
 .flatpickr-calendar.open { z-index: 1060; }
 .flatpickr-monthSelect-months { display: flex; flex-wrap: wrap; padding: 4px; margin: 6px 0 2px; }
 .flatpickr-monthSelect-month { flex: 0 0 33.333%; max-width: 33.333%; width: auto; margin: 0; padding: 9px 0; font-size: 0.85rem; }
@@ -383,6 +387,7 @@ $extra_js = '
 <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/id.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/index.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script>
 const bulanList = ' . json_encode($bulan_list) . ';
 
@@ -639,12 +644,67 @@ function filterSantriByKelas() {
 
     if (!currentStillVisible) {
         siswaSelect.value = "";
+        if (window.jQuery && jQuery.fn.select2) {
+            jQuery(siswaSelect).trigger("change.select2");
+        }
         loadTagihan();
     }
 }
 
+// ===== Pencarian santri dengan mengetik (Select2) =====
+function initSantriSearch() {
+    if (!(window.jQuery && jQuery.fn.select2)) {
+        // Fallback: tanpa Select2, dropdown biasa tetap berfungsi
+        document.getElementById("siswaSelect").addEventListener("change", loadTagihan);
+        return;
+    }
+    const $siswa = jQuery("#siswaSelect");
+    $siswa.select2({
+        theme: "bootstrap-5",
+        width: "100%",
+        placeholder: "Ketik nama santri untuk mencari...",
+        allowClear: true,
+        language: {
+            noResults: function() { return "Santri tidak ditemukan"; },
+            searching: function() { return "Mencari..."; }
+        },
+        // Cocokkan per kata (urutan bebas) pada nama & kelas, dan hormati filter kelas
+        matcher: function(params, data) {
+            if (!data.element || !data.id) return null;
+            if (data.element.disabled) return null;
+            const term = jQuery.trim(params.term || "").toLowerCase();
+            if (term === "") return data;
+            const text = (data.text || "").replace(/\s+/g, " ").toLowerCase();
+            const words = term.split(/\s+/);
+            return words.every(w => text.indexOf(w) > -1) ? data : null;
+        },
+        templateResult: function(data) {
+            if (!data.element || !data.id) return data.text;
+            const nama = (data.text.split(" - ")[0] || "").trim();
+            const kelas = data.element.getAttribute("data-kelas") || "";
+            const $el = jQuery("<div></div>");
+            $el.append(jQuery("<div></div>").text(nama));
+            if (kelas) $el.append(jQuery("<div class=\\"select2-santri-kelas\\"></div>").text(kelas));
+            return $el;
+        }
+    });
+    // Select2 memicu event change versi jQuery, jadi pakai jQuery .on()
+    $siswa.on("change", loadTagihan);
+    // Langsung fokus ke kotak pencarian saat dropdown dibuka
+    $siswa.on("select2:open", function() {
+        setTimeout(function() {
+            const f = document.querySelector(".select2-container--open .select2-search__field");
+            if (f) f.focus();
+        }, 0);
+    });
+    // Tombol reset form juga mengosongkan Select2
+    document.getElementById("formPembayaranBatch").addEventListener("reset", function() {
+        setTimeout(function() { $siswa.val("").trigger("change"); }, 0);
+    });
+}
+
+initSantriSearch();
 document.getElementById("kelasSelect").addEventListener("change", filterSantriByKelas);
-document.getElementById("siswaSelect").addEventListener("change", loadTagihan);
 document.getElementById("modeSelect").addEventListener("change", loadTagihan);
 
 document.getElementById("formPembayaranBatch").addEventListener("submit", function(e) {
