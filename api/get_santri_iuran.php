@@ -36,6 +36,12 @@ if ($mode !== 'bulanan' && $mode !== 'tahunan') {
     $mode = 'tahunan';
 }
 
+$periode_awal = isset($_GET['periode_awal']) ? trim(sanitize($_GET['periode_awal'])) : '';
+$periode_akhir = isset($_GET['periode_akhir']) ? trim(sanitize($_GET['periode_akhir'])) : '';
+if ($periode_akhir === '') {
+    $periode_akhir = $periode_awal;
+}
+
 if (appTableExists('santri_iuran')) {
     $query = "SELECT sb.id_iuran, b.nama_iuran, b.tahun, b.nominal, $periodeExpr as periode_tipe
               FROM santri_iuran sb
@@ -59,27 +65,43 @@ while ($row = mysqli_fetch_assoc($result)) {
         continue;
     }
 
+    $id_iuran = (int)$row['id_iuran'];
+    $nominal = (float)$row['nominal'];
+
     if ($periode_tipe === 'tahunan') {
         $tahun = date('Y');
         $bulan = '';
+        $periode_key = buildPeriodeKey('tahunan', $tahun, '');
+
+        $sumQuery = mysqli_query($conn, "
+            SELECT COALESCE(SUM(jumlah_bayar), 0) as total
+            FROM pembayaran
+            WHERE id_santri = '$id_santri'
+              AND id_iuran = '$id_iuran'
+              AND periode_key = '" . mysqli_real_escape_string($conn, $periode_key) . "'
+        ");
+        $sum = mysqli_fetch_assoc($sumQuery);
+        $sudah_bayar = (float)$sum['total'];
+        $sisa_tagihan = max($nominal - $sudah_bayar, 0.0);
+        $ikut_lunas = false;
+        $lunas_oleh_label = null;
     } else {
-        $tahun = date('Y');
-        $bulan = bulanIndo((int)date('n'));
+        if (preg_match('/^(\d{4})-(\d{2})$/', $periode_awal, $m)) {
+            $tahun = $m[1];
+            $bulan = bulanIndo((int)$m[2]);
+            $periode_key = $periode_awal;
+        } else {
+            $tahun = date('Y');
+            $bulan = bulanIndo((int)date('n'));
+            $periode_key = buildPeriodeKey('bulanan', $tahun, $bulan);
+        }
+
+        $paidState = getSantriIuranBulananPaidState($id_santri, $id_iuran, $nominal, $periode_key);
+        $sudah_bayar = (float)$paidState['sudah_bayar'];
+        $sisa_tagihan = (float)$paidState['sisa_tagihan'];
+        $ikut_lunas = (bool)$paidState['ikut_lunas'];
+        $lunas_oleh_label = $paidState['lunas_oleh_label'];
     }
-
-    $periode_key = buildPeriodeKey($periode_tipe, $tahun, $bulan);
-    $id_iuran = (int)$row['id_iuran'];
-
-    $sumQuery = mysqli_query($conn, "
-        SELECT COALESCE(SUM(jumlah_bayar), 0) as total
-        FROM pembayaran
-        WHERE id_santri = '$id_santri'
-          AND id_iuran = '$id_iuran'
-          AND periode_key = '" . mysqli_real_escape_string($conn, $periode_key) . "'
-    ");
-    $sum = mysqli_fetch_assoc($sumQuery);
-    $sudah_bayar = (float)$sum['total'];
-    $nominal = (float)$row['nominal'];
 
     $items[] = [
         'id_iuran' => $id_iuran,
@@ -91,7 +113,9 @@ while ($row = mysqli_fetch_assoc($result)) {
         'default_tahun' => (string)$tahun,
         'default_periode_key' => $periode_key,
         'sudah_bayar' => (int)$sudah_bayar,
-        'sisa_tagihan' => (int)max($nominal - $sudah_bayar, 0)
+        'sisa_tagihan' => (int)$sisa_tagihan,
+        'ikut_lunas' => $ikut_lunas,
+        'lunas_oleh_label' => $lunas_oleh_label,
     ];
 }
 
