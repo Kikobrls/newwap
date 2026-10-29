@@ -5,6 +5,18 @@
  */
 
 $page_title = 'Pembayaran Kolektif';
+$extra_css = '
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/style.css">
+<style>
+.flatpickr-calendar.open { z-index: 1060; }
+.flatpickr-monthSelect-months { display: flex; flex-wrap: wrap; padding: 4px; margin: 6px 0 2px; }
+.flatpickr-monthSelect-month { flex: 0 0 33.333%; max-width: 33.333%; width: auto; margin: 0; padding: 9px 0; font-size: 0.85rem; }
+.periode-picker { background-color: #fff !important; cursor: pointer; }
+.periode-picker:disabled { background-color: #e9ecef !important; cursor: default; }
+.periode-info { min-height: 1.2em; }
+</style>
+';
 require_once '../../includes/header.php';
 
 // Block kepala_tpq from accessing this page
@@ -30,14 +42,16 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_bulk'])) {
     $tgl_bayar = date('Y-m-d');
     $metode_bayar = 'tunai';
     $keterangan = sanitize($_POST['keterangan'] ?? '');
-    $id_user = (int) $_SESSION['id_user'];
 
     $pilih_santri = $_POST['pilih_santri'] ?? [];
     
     // Items data
     $pilih_item = $_POST['pilih_item'] ?? [];
-    $bulan_dibayar = $_POST['bulan_dibayar'] ?? [];
-    $bulan_akhir_dibayar = $_POST['bulan_akhir'] ?? [];
+    // Bulanan: rentang periode dari flatpickr (format YYYY-MM), 1 kolom untuk beberapa bulan
+    // SATU rentang periode (format YYYY-MM) yang berlaku untuk semua iuran bulanan
+    $periode_awal_global = trim((string) ($_POST['periode_awal'] ?? ''));
+    $periode_akhir_global = trim((string) ($_POST['periode_akhir'] ?? ''));
+    // Tahunan: tahun dibayar
     $tahun_dibayar = $_POST['tahun_dibayar'] ?? [];
     $jumlah_bayar = $_POST['jumlah_bayar'] ?? [];
     
@@ -81,31 +95,26 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_bulk'])) {
                     throw new Exception('Jumlah bayar untuk tagihan ' . $iuran['nama_iuran'] . ' harus lebih dari 0.');
                 }
 
-                $tahun = sanitize($tahun_dibayar[$id_iuran] ?? '');
-                $bulan_awal = $periode_tipe === 'bulanan' ? sanitize($bulan_dibayar[$id_iuran] ?? '') : '-';
-                $bulan_akhir = $periode_tipe === 'bulanan' ? sanitize($bulan_akhir_dibayar[$id_iuran] ?? '') : '';
-
-                $semua_bulan = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
-                $bulan_list_process = [];
-                
-                if ($periode_tipe === 'bulanan' && !empty($bulan_awal)) {
-                    $idx_awal = array_search($bulan_awal, $semua_bulan);
-                    $idx_akhir = empty($bulan_akhir) ? $idx_awal : array_search($bulan_akhir, $semua_bulan);
-                    
-                    if ($idx_awal === false || $idx_akhir === false || $idx_akhir < $idx_awal) {
-                        $bulan_list_process = [$bulan_awal];
-                    } else {
-                        for ($i = $idx_awal; $i <= $idx_akhir; $i++) {
-                            $bulan_list_process[] = $semua_bulan[$i];
-                        }
+                // Build list of periods to process
+                $periode_list_process = [];
+                if ($periode_tipe === 'bulanan') {
+                    if ($periode_awal_global === '') {
+                        throw new Exception('Periode bulan harus dipilih.');
+                    }
+                    $periode_list_process = expandPeriodeBulanan($periode_awal_global, $periode_akhir_global);
+                    if (empty($periode_list_process)) {
+                        throw new Exception('Rentang periode tidak valid (maksimal 36 bulan).');
                     }
                 } else {
-                    $bulan_list_process = ['-'];
+                    $tahun = preg_replace('/\D/', '', (string) ($tahun_dibayar[$id_iuran] ?? ''));
+                    if (empty($tahun)) {
+                        throw new Exception('Tahun untuk tagihan ' . $iuran['nama_iuran'] . ' harus diisi.');
+                    }
+                    $periode_list_process[] = ['bulan' => '-', 'tahun' => $tahun, 'periode_key' => buildPeriodeKey('tahunan', $tahun)];
                 }
 
-                foreach ($bulan_list_process as $bln) {
-                    $periode_key = buildPeriodeKey($periode_tipe, $tahun, $bln);
-                    if (empty($periode_key)) {
+                foreach ($periode_list_process as $periode) {
+                    if (empty($periode['periode_key'])) {
                         throw new Exception('Periode untuk tagihan ' . $iuran['nama_iuran'] . ' tidak lengkap.');
                     }
 
@@ -113,9 +122,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_bulk'])) {
                         'id_iuran' => $id_iuran,
                         'iuran_info' => $iuran,
                         'periode_tipe' => $periode_tipe,
-                        'bulan' => $bln,
-                        'tahun' => $tahun,
-                        'periode_key' => $periode_key,
+                        'bulan' => $periode['bulan'],
+                        'tahun' => $periode['tahun'],
+                        'periode_key' => $periode['periode_key'],
                         'jumlah' => $jumlah
                     ];
                 }
@@ -139,24 +148,40 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_bulk'])) {
                     $nominal = (float) $item['iuran_info']['nominal'];
                     $nama_iuran = $item['iuran_info']['nama_iuran'];
 
-                    // Get already paid amount
-                    $sum_q = mysqli_query($conn, "
-                        SELECT COALESCE(SUM(jumlah_bayar), 0) as total
-                        FROM pembayaran
-                        WHERE id_santri = '$id_santri'
-                          AND id_iuran = '$id_iuran'
-                          AND periode_key = '" . mysqli_real_escape_string($conn, $periode_key) . "'
-                    ");
-                    $sum_row = mysqli_fetch_assoc($sum_q);
-                    $sudah_bayar = (float) $sum_row['total'];
+                    // Get already paid amount (including cumulative prior-month paid state for bulanan)
+                    if ($item['periode_tipe'] === 'bulanan') {
+                        $paidState = getSantriIuranBulananPaidState($id_santri, $id_iuran, $nominal, $periode_key);
+                        $sudah_bayar = (float) $paidState['sudah_bayar'];
+                        if (!empty($paidState['ikut_lunas'])) {
+                            $nm_q = mysqli_query($conn, "SELECT nama FROM santri WHERE id_santri = '$id_santri'");
+                            $nm_row = $nm_q ? mysqli_fetch_assoc($nm_q) : null;
+                            $nama_santri = $nm_row['nama'] ?? ('ID ' . $id_santri);
+                            $label_periode = formatPeriodeTagihan($item['periode_tipe'], $item['bulan'], $item['tahun']);
+                            throw new Exception("Pembayaran santri $nama_santri untuk tagihan $nama_iuran periode $label_periode sudah ikut lunas karena periode {$paidState['lunas_oleh_label']} sudah dibayar lunas.");
+                        }
+                    } else {
+                        $sum_q = mysqli_query($conn, "
+                            SELECT COALESCE(SUM(jumlah_bayar), 0) as total
+                            FROM pembayaran
+                            WHERE id_santri = '$id_santri'
+                              AND id_iuran = '$id_iuran'
+                              AND periode_key = '" . mysqli_real_escape_string($conn, $periode_key) . "'
+                        ");
+                        $sum_row = mysqli_fetch_assoc($sum_q);
+                        $sudah_bayar = (float) $sum_row['total'];
+                    }
                     
                     if (($sudah_bayar + $jumlah) > $nominal) {
                         // Throw to stop everything, or skip? We throw to prevent partial invalid states.
-                        throw new Exception("Pembayaran santri ID $id_santri untuk tagihan $nama_iuran melebihi sisa tagihan maksimal.");
+                        $nm_q = mysqli_query($conn, "SELECT nama FROM santri WHERE id_santri = '$id_santri'");
+                        $nm_row = $nm_q ? mysqli_fetch_assoc($nm_q) : null;
+                        $nama_santri = $nm_row['nama'] ?? ('ID ' . $id_santri);
+                        $label_periode = formatPeriodeTagihan($item['periode_tipe'], $item['bulan'], $item['tahun']);
+                        throw new Exception("Pembayaran santri $nama_santri untuk tagihan $nama_iuran periode $label_periode melebihi sisa tagihan. Sisa maksimal: " . formatRupiah(max($nominal - $sudah_bayar, 0)) . ".");
                     }
 
-                    $insert_detail = "INSERT INTO pembayaran (id_user, id_santri, tgl_bayar, periode_tipe, periode_key, bulan_dibayar, tahun_dibayar, id_iuran, jumlah_bayar, metode_bayar, keterangan)
-                                      VALUES ('$id_user', '$id_santri', '$tgl_bayar', '" . $item['periode_tipe'] . "', '" . mysqli_real_escape_string($conn, $periode_key) . "', '" . mysqli_real_escape_string($conn, $item['bulan']) . "', '" . mysqli_real_escape_string($conn, $item['tahun']) . "', '$id_iuran', '$jumlah', '$metode_bayar', '" . mysqli_real_escape_string($conn, $keterangan) . "')";
+                    $insert_detail = "INSERT INTO pembayaran (id_santri, tgl_bayar, periode_tipe, periode_key, bulan_dibayar, tahun_dibayar, id_iuran, jumlah_bayar, metode_bayar, keterangan)
+                                      VALUES ('$id_santri', '$tgl_bayar', '" . $item['periode_tipe'] . "', '" . mysqli_real_escape_string($conn, $periode_key) . "', '" . mysqli_real_escape_string($conn, $item['bulan']) . "', '" . mysqli_real_escape_string($conn, $item['tahun']) . "', '$id_iuran', '$jumlah', '$metode_bayar', '" . mysqli_real_escape_string($conn, $keterangan) . "')";
                     if (!mysqli_query($conn, $insert_detail)) {
                         throw new Exception('Gagal menyimpan item pembayaran.');
                     }
@@ -324,6 +349,17 @@ if ($filter_kelas > 0 || $is_all_kelas) {
                                 <div class="card bg-light h-100">
                                     <div class="card-body">
                                         <h6 class="font-weight-bold mb-3"><i class="fas fa-list-check mr-2"></i>Pilih Tagihan (Berlaku Semua)</h6>
+
+                                        <?php if ($filter_mode === 'bulanan'): ?>
+                                        <div class="form-group mb-3" id="periodeGlobalGroup">
+                                            <label class="small font-weight-bold">Periode Bulan <span class="text-danger">*</span> <span class="text-muted font-weight-normal">(berlaku untuk semua iuran)</span></label>
+                                            <input type="text" class="form-control form-control-sm periode-picker" id="periodeGlobal" placeholder="Klik untuk pilih bulan / rentang bulan..." readonly>
+                                            <input type="hidden" name="periode_awal" id="periode_awal" value="">
+                                            <input type="hidden" name="periode_akhir" id="periode_akhir" value="">
+                                            <small class="form-text text-muted periode-info" id="periodeGlobalInfo"></small>
+                                        </div>
+                                        <?php endif; ?>
+
                                         <div id="tagihanContainer" class="mb-3">
                                             <div class="text-center text-muted">Akan memuat tagihan...</div>
                                         </div>
@@ -377,9 +413,6 @@ if ($filter_kelas > 0 || $is_all_kelas) {
                                             </table>
                                         </div>
                                     </div>
-                                    <div class="card-footer bg-white text-muted small text-center border-top-0">
-                                        Hanya santri yang dicentang yang akan diproses transaksinya. Pengecekan lunas tidak bisa dilakukan massal karena Sisa Terutang setiap siswa berbeda bergantung pada riwayat masing-masing.
-                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -399,19 +432,13 @@ if ($filter_kelas > 0 || $is_all_kelas) {
 
 <?php
 $extra_js = '
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/id.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/index.js"></script>
 <script>
     const filterKelas = "' . addslashes($filter_kelas_raw) . '";
     const filterMode = "' . htmlspecialchars($filter_mode) . '";
     const bulanList = ' . json_encode($bulan_list) . ';
-
-    function buildBulanOptions(selected) {
-        let html = "<option value=\"\">-- Pilih Bulan --</option>";
-        bulanList.forEach((bulan) => {
-            const selectedAttr = selected === bulan ? "selected" : "";
-            html += `<option value="${bulan}" ${selectedAttr}>${bulan}</option>`;
-        });
-        return html;
-    }
 
     function formatRupiahJs(number) {
         return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0 }).format(number || 0);
@@ -463,31 +490,18 @@ $extra_js = '
 
                         <div class="pl-4">
                             <div class="form-row">
-                                ${isBulanan ? `
+                                ${isBulanan ? "" : `
                                 <div class="col-4 mb-1">
-                                    <label class="sr-only">Bulan Mulai</label>
-                                    <select class="form-control form-control-sm item-field" name="bulan_dibayar[${item.id_iuran}]" data-item="${item.id_iuran}" ${disabledAttr}>
-                                        ${buildBulanOptions(item.default_bulan || "")}
-                                    </select>
-                                </div>
-                                <div class="col-4 mb-1">
-                                    <label class="sr-only">s/d Akhir</label>
-                                    <select class="form-control form-control-sm item-field" name="bulan_akhir[${item.id_iuran}]" data-item="${item.id_iuran}" ${disabledAttr}>
-                                        <option value="">-- Sama --</option>
-                                        ${buildBulanOptions("")}
-                                    </select>
-                                </div>` : ""}
-
-                                <div class="${isBulanan ? "col-4" : "col-4"} mb-1">
-                                    <label class="sr-only">Tahun</label>
+                                    <label class="small mb-1">Tahun</label>
                                     <input type="number" class="form-control form-control-sm item-field" name="tahun_dibayar[${item.id_iuran}]" placeholder="Tahun" value="${item.default_tahun || currentYear}" min="2020" max="2100" data-item="${item.id_iuran}" ${disabledAttr}>
-                                </div>
+                                </div>`}
 
                                 <div class="col-12 mt-1 mb-1">
                                     <div class="input-group input-group-sm">
-                                        <div class="input-group-prepend"><span class="input-group-text bg-light text-dark font-weight-bold" style="font-size: 0.75rem;">Nominal per BIn/SSW</span><span class="input-group-text">Rp</span></div>
-                                        <input type="text" class="form-control item-field" name="jumlah_bayar[${item.id_iuran}]" value="${new Intl.NumberFormat("id-ID").format(defaultAmount)}" data-item="${item.id_iuran}" onkeyup="formatCurrency(this)" ${disabledAttr}>
+                                        <div class="input-group-prepend"><span class="input-group-text bg-light text-dark font-weight-bold" style="font-size: 0.75rem;">${isBulanan ? "Nominal per Bulan/Santri" : "Nominal per Santri"}</span><span class="input-group-text">Rp</span></div>
+                                        <input type="text" class="form-control item-field jumlah-field" name="jumlah_bayar[${item.id_iuran}]" id="jumlah_${item.id_iuran}" value="${new Intl.NumberFormat("id-ID").format(defaultAmount)}" data-item="${item.id_iuran}" onkeyup="formatCurrency(this); updatePeriodeInfo();" ${disabledAttr}>
                                     </div>
+                                    ${isBulanan ? `<small class="text-muted item-subtotal" data-item="${item.id_iuran}"></small>` : ""}
                                 </div>
                             </div>
                         </div>
@@ -503,15 +517,104 @@ $extra_js = '
                 const id = this.getAttribute("data-id");
                 document.querySelectorAll(`.item-field[data-item="${id}"]`).forEach((field) => {
                     field.disabled = !this.checked;
-                    if (this.checked && (field.name || "").includes("jumlah_bayar")) {
-                        // field.focus(); // can be annoying in bulk
-                    }
                 });
+                updatePeriodeInfo();
             });
         });
+
+        updatePeriodeInfo();
+    }
+
+    // ===== Flatpickr month-range picker: SATU picker untuk semua iuran bulanan =====
+    let periodeGlobalPicker = null;
+
+    function pad2(n) { return String(n).padStart(2, "0"); }
+    function toPeriodeKey(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1); }
+    function periodeKeyToDate(key) {
+        const m = /^(\d{4})-(\d{2})$/.exec(key || "");
+        return m ? new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, 1) : null;
+    }
+    function monthsBetween(a, b) {
+        return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + 1;
+    }
+    function parseRupiah(str) {
+        return parseInt(String(str || "").replace(/[^\d]/g, ""), 10) || 0;
+    }
+
+    function getPeriodeGlobalCount() {
+        const awalEl = document.getElementById("periode_awal");
+        const akhirEl = document.getElementById("periode_akhir");
+        if (!awalEl) return 0;
+        const awal = periodeKeyToDate(awalEl.value);
+        const akhir = periodeKeyToDate(akhirEl.value) || awal;
+        return awal ? monthsBetween(awal, akhir) : 0;
+    }
+
+    function updatePeriodeInfo() {
+        const info = document.getElementById("periodeGlobalInfo");
+        if (!info) return; // mode tahunan
+
+        const n = getPeriodeGlobalCount();
+        let grand = 0;
+        document.querySelectorAll(".item-subtotal").forEach((el) => {
+            const id = el.getAttribute("data-item");
+            const cb = document.getElementById("check_" + id);
+            const perBulan = parseRupiah((document.getElementById("jumlah_" + id) || {}).value);
+            if (cb && cb.checked && n > 0 && perBulan > 0) {
+                const sub = n * perBulan;
+                grand += sub;
+                el.innerHTML = `${n} bulan &times; ${formatRupiahJs(perBulan)} = <strong>${formatRupiahJs(sub)}</strong> per santri`;
+            } else {
+                el.textContent = "";
+            }
+        });
+
+        if (n <= 0) { info.textContent = ""; return; }
+        info.innerHTML = `<i class="fas fa-calendar-check mr-1"></i>${n} bulan dipilih` + (grand > 0 ? ` &nbsp;|&nbsp; Total per santri: <strong>${formatRupiahJs(grand)}</strong>` : "");
+    }
+
+    function initPeriodeGlobalPicker() {
+        const input = document.getElementById("periodeGlobal");
+        if (!input || periodeGlobalPicker) return;
+        const hiddenAwal = document.getElementById("periode_awal");
+        const hiddenAkhir = document.getElementById("periode_akhir");
+        const defaultDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+        periodeGlobalPicker = flatpickr(input, {
+            mode: "range",
+            locale: "id",
+            disableMobile: true,
+            defaultDate: [defaultDate, defaultDate],
+            plugins: [new monthSelectPlugin({ shorthand: false, dateFormat: "F Y", altFormat: "F Y", theme: "light" })],
+            onChange: function(selectedDates) {
+                if (selectedDates.length === 0) {
+                    hiddenAwal.value = ""; hiddenAkhir.value = "";
+                } else if (selectedDates.length === 1) {
+                    hiddenAwal.value = toPeriodeKey(selectedDates[0]);
+                    hiddenAkhir.value = hiddenAwal.value;
+                } else {
+                    hiddenAwal.value = toPeriodeKey(selectedDates[0]);
+                    hiddenAkhir.value = toPeriodeKey(selectedDates[1]);
+                }
+                updatePeriodeInfo();
+            },
+            onClose: function(selectedDates, dateStr, fp) {
+                // Jika hanya 1 bulan diklik lalu ditutup, anggap rentang 1 bulan (bukan dikosongkan).
+                if (selectedDates.length === 1) {
+                    fp.setDate([selectedDates[0], selectedDates[0]], true);
+                }
+            }
+        });
+
+        // Set nilai awal (1 bulan = bulan berjalan)
+        hiddenAwal.value = toPeriodeKey(defaultDate);
+        hiddenAkhir.value = toPeriodeKey(defaultDate);
+        updatePeriodeInfo();
     }
 
     document.addEventListener("DOMContentLoaded", function() {
+        initPeriodeGlobalPicker();
+
         if (filterKelas && filterKelas !== "") {
             const kelasParam = (filterKelas === "all" || filterKelas === "0") ? "all" : parseInt(filterKelas || "0");
             if (kelasParam > 0 || kelasParam === "all") {
@@ -557,10 +660,16 @@ $extra_js = '
                     return;
                 }
 
-                const checkedItems = document.querySelectorAll(".item-check:checked").length;
-                if (checkedItems === 0) {
+                const checkedItems = document.querySelectorAll(".item-check:checked");
+                if (checkedItems.length === 0) {
                     e.preventDefault();
                     toastr.warning("Silakan centang minimal 1 tagihan/iuran di sebelah kiri!", "Pilih Tagihan");
+                    return;
+                }
+                const awalGlobal = document.getElementById("periode_awal");
+                if (awalGlobal && !awalGlobal.value) {
+                    e.preventDefault();
+                    toastr.warning("Pilih periode bulan terlebih dahulu.", "Periode Kosong");
                     return;
                 }
             });

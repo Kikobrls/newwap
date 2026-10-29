@@ -246,6 +246,148 @@ function formatPeriodeTagihan($periode_tipe, $bulan, $tahun)
 }
 
 /**
+ * Format monthly periode_key ("YYYY-MM") into Indonesian label ("Bulan Tahun").
+ */
+function formatPeriodeKeyBulanan($periode_key)
+{
+    if (!preg_match('/^(\d{4})-(\d{2})$/', (string)$periode_key, $m)) {
+        return (string)$periode_key;
+    }
+    $bln = bulanIndo((int)$m[2]);
+    return trim(($bln ?: $m[2]) . ' ' . $m[1]);
+}
+
+/**
+ * Check cumulative monthly paid state for a santri & iuran on a given periode_key ("YYYY-MM").
+ *
+ * Rule: If a later month (>= $periode_key) for the same santri & monthly iuran is already
+ * fully paid (total >= nominal), then this month ($periode_key) is also considered paid
+ * ("ikut lunas").
+ */
+function getSantriIuranBulananPaidState($id_santri, $id_iuran, $nominal, $periode_key)
+{
+    global $conn;
+
+    $id_santri = (int)$id_santri;
+    $id_iuran = (int)$id_iuran;
+    $nominal = (float)$nominal;
+    $periode_key = trim((string)$periode_key);
+    $pk_safe = mysqli_real_escape_string($conn, $periode_key);
+
+    $q = mysqli_query($conn, "
+        SELECT periode_key, COALESCE(SUM(jumlah_bayar), 0) AS total
+        FROM pembayaran
+        WHERE id_santri = '$id_santri'
+          AND id_iuran = '$id_iuran'
+          AND periode_tipe = 'bulanan'
+          AND periode_key >= '$pk_safe'
+        GROUP BY periode_key
+        ORDER BY periode_key DESC
+    ");
+
+    $direct_paid = 0.0;
+    $later_full_key = null;
+
+    while ($q && ($r = mysqli_fetch_assoc($q))) {
+        $rk = (string)$r['periode_key'];
+        $rtotal = (float)$r['total'];
+        if ($rk === $periode_key) {
+            $direct_paid = $rtotal;
+        } elseif ($rtotal >= $nominal && $nominal > 0 && $later_full_key === null) {
+            $later_full_key = $rk;
+        }
+    }
+
+    if ($direct_paid >= $nominal && $nominal > 0) {
+        return [
+            'sudah_bayar_langsung' => $direct_paid,
+            'sudah_bayar' => $direct_paid,
+            'sisa_tagihan' => 0.0,
+            'is_lunas' => true,
+            'ikut_lunas' => false,
+            'lunas_oleh_periode' => $periode_key,
+            'lunas_oleh_label' => formatPeriodeKeyBulanan($periode_key),
+        ];
+    }
+
+    if ($later_full_key !== null) {
+        return [
+            'sudah_bayar_langsung' => $direct_paid,
+            'sudah_bayar' => $nominal,
+            'sisa_tagihan' => 0.0,
+            'is_lunas' => true,
+            'ikut_lunas' => true,
+            'lunas_oleh_periode' => $later_full_key,
+            'lunas_oleh_label' => formatPeriodeKeyBulanan($later_full_key),
+        ];
+    }
+
+    $sisa = max($nominal - $direct_paid, 0.0);
+    return [
+        'sudah_bayar_langsung' => $direct_paid,
+        'sudah_bayar' => $direct_paid,
+        'sisa_tagihan' => $sisa,
+        'is_lunas' => ($sisa <= 0 && $nominal > 0),
+        'ikut_lunas' => false,
+        'lunas_oleh_periode' => null,
+        'lunas_oleh_label' => null,
+    ];
+}
+
+/**
+ * Expand a monthly period range (inclusive) into a list of months.
+ *
+ * Accepts period keys in "YYYY-MM" format (as submitted by the flatpickr
+ * month-range picker on the payment forms). The range may cross a year
+ * boundary (e.g. 2026-07 .. 2027-06). If $akhir is empty it defaults to
+ * $awal (single month). If $akhir < $awal they are swapped.
+ *
+ * Returns an array of ['bulan' => 'Januari', 'tahun' => '2026', 'periode_key' => '2026-01']
+ * or an empty array when the input is invalid / exceeds $max_months.
+ */
+function expandPeriodeBulanan($awal, $akhir = '', $max_months = 36)
+{
+    global $bulan_indo;
+
+    $awal = trim((string)$awal);
+    $akhir = trim((string)$akhir);
+    if ($akhir === '') {
+        $akhir = $awal;
+    }
+
+    if (!preg_match('/^(\d{4})-(\d{2})$/', $awal, $ma) || !preg_match('/^(\d{4})-(\d{2})$/', $akhir, $mb)) {
+        return [];
+    }
+
+    $ya = (int)$ma[1]; $ba = (int)$ma[2];
+    $yb = (int)$mb[1]; $bb = (int)$mb[2];
+    if ($ba < 1 || $ba > 12 || $bb < 1 || $bb > 12 || $ya < 2000 || $yb < 2000 || $ya > 2100 || $yb > 2100) {
+        return [];
+    }
+
+    $start = $ya * 12 + ($ba - 1);
+    $end = $yb * 12 + ($bb - 1);
+    if ($end < $start) {
+        [$start, $end] = [$end, $start];
+    }
+    if (($end - $start + 1) > $max_months) {
+        return [];
+    }
+
+    $list = [];
+    for ($i = $start; $i <= $end; $i++) {
+        $y = intdiv($i, 12);
+        $m = ($i % 12) + 1;
+        $list[] = [
+            'bulan' => $bulan_indo[$m - 1],
+            'tahun' => (string)$y,
+            'periode_key' => $y . '-' . str_pad((string)$m, 2, '0', STR_PAD_LEFT),
+        ];
+    }
+    return $list;
+}
+
+/**
  * Check table existence in current database.
  * Cached per-request in a static array — the schema doesn't change
  * mid-request, so there's no reason to re-query information_schema
@@ -303,7 +445,11 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
 {
     global $conn;
 
-    $year = $year ?: (int)date('Y');
+    $current_year = (int)date('Y');
+    $current_month = (int)date('n');
+    $year = $year ? (int)$year : $current_year;
+    $target_month = ($year < $current_year) ? 12 : (($year > $current_year) ? 0 : $current_month);
+
     $santri_ids = array_values(array_unique(array_filter(array_map('intval', (array)$santri_ids))));
     if (empty($santri_ids)) {
         return [];
@@ -318,6 +464,11 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
             'lunas_sampai' => null,
             'bulan_lunas_tahun_berjalan' => 0,
             'bulan_lunas_berurutan' => 0,
+            'is_telat' => false,
+            'telat_bulan' => 0,
+            'telat_nominal' => 0,
+            'telat_daftar_bulan' => [],
+            'telat_text' => null,
         ];
     }
 
@@ -354,16 +505,25 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
         FROM pembayaran
         WHERE id_santri IN ($id_list)
           AND periode_tipe = 'bulanan'
-          AND periode_key LIKE '" . (int)$year . "-%'
+          AND periode_key >= '" . (int)$year . "-01'
         GROUP BY id_santri, periode_key, id_iuran
     ");
 
     $paid_sum = [];
+    $max_paid_key = [];
     while ($sum_rows && ($row = mysqli_fetch_assoc($sum_rows))) {
         $id_santri = (int)$row['id_santri'];
-        $periode_key = $row['periode_key'];
+        $periode_key = (string)$row['periode_key'];
         $id_iuran = (int)$row['id_iuran'];
-        $paid_sum[$id_santri][$periode_key][$id_iuran] = (float)$row['total'];
+        $total = (float)$row['total'];
+        $paid_sum[$id_santri][$periode_key][$id_iuran] = $total;
+
+        $nominal_target = $fee_nominal[$id_santri][$id_iuran] ?? 0;
+        if ($nominal_target > 0 && $total >= $nominal_target) {
+            if (!isset($max_paid_key[$id_santri][$id_iuran]) || strcmp($periode_key, $max_paid_key[$id_santri][$id_iuran]) > 0) {
+                $max_paid_key[$id_santri][$id_iuran] = $periode_key;
+            }
+        }
     }
 
     foreach ($santri_ids as $id_santri) {
@@ -378,7 +538,9 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
             $is_complete = true;
             foreach ($fees as $id_iuran => $nominal) {
                 $total = $paid_sum[$id_santri][$periode_key][$id_iuran] ?? 0;
-                if ($total < $nominal) {
+                $latest_lunas_key = $max_paid_key[$id_santri][$id_iuran] ?? null;
+                // Bulan dianggap lunas jika dibayar penuh langsung ATAU ada bulan setelahnya yang sudah lunas
+                if ($total < $nominal && ($latest_lunas_key === null || strcmp($latest_lunas_key, $periode_key) < 0)) {
                     $is_complete = false;
                     break;
                 }
@@ -396,16 +558,57 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
             }
         }
 
+        for ($m = 1; $m <= $berurutan; $m++) {
+            $complete_months[$m] = true;
+        }
+
+        // Hitung keterlambatan / tunggakan sampai dengan bulan berjalan ($target_month)
+        $telat_bulan = 0;
+        $telat_nominal = 0.0;
+        $telat_daftar_bulan = [];
+        for ($m = 1; $m <= $target_month; $m++) {
+            if (empty($complete_months[$m])) {
+                $telat_bulan++;
+                $telat_daftar_bulan[] = bulanIndo($m);
+                $pk_m = $year . '-' . str_pad((string)$m, 2, '0', STR_PAD_LEFT);
+                foreach ($fees as $id_iuran => $nominal) {
+                    $latest_lunas_key = $max_paid_key[$id_santri][$id_iuran] ?? null;
+                    if ($latest_lunas_key !== null && strcmp($latest_lunas_key, $pk_m) >= 0) {
+                        continue;
+                    }
+                    $paid_m = $paid_sum[$id_santri][$pk_m][$id_iuran] ?? 0.0;
+                    $telat_nominal += max($nominal - $paid_m, 0.0);
+                }
+            }
+        }
+        $is_telat = ($telat_bulan > 0);
+        $telat_range = '';
+        if ($is_telat) {
+            if (count($telat_daftar_bulan) === 1) {
+                $telat_range = $telat_daftar_bulan[0];
+            } else {
+                $telat_range = $telat_daftar_bulan[0] . ' - ' . $telat_daftar_bulan[count($telat_daftar_bulan) - 1];
+            }
+        }
+        $telat_text = $is_telat
+            ? ('Telat ' . $telat_bulan . ' bln (' . $telat_range . ')')
+            : null;
+
         $jumlah_lunas = count($complete_months);
         if ($jumlah_lunas === 0) {
             $has_any_payment = !empty($paid_sum[$id_santri]);
             $result[$id_santri] = [
                 'status_key' => $has_any_payment ? 'belum_lunas' : 'belum_bayar',
                 'status_text' => $has_any_payment ? 'Belum lunas' : 'Belum ada pembayaran bulanan',
-                'badge' => $has_any_payment ? 'warning' : 'secondary',
+                'badge' => $is_telat ? 'danger' : ($has_any_payment ? 'warning' : 'secondary'),
                 'lunas_sampai' => null,
                 'bulan_lunas_tahun_berjalan' => 0,
                 'bulan_lunas_berurutan' => 0,
+                'is_telat' => $is_telat,
+                'telat_bulan' => $telat_bulan,
+                'telat_nominal' => (int)$telat_nominal,
+                'telat_daftar_bulan' => $telat_daftar_bulan,
+                'telat_text' => $telat_text,
             ];
             continue;
         }
@@ -418,15 +621,25 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
                 'lunas_sampai' => $year . '-' . str_pad((string)$berurutan, 2, '0', STR_PAD_LEFT),
                 'bulan_lunas_tahun_berjalan' => $jumlah_lunas,
                 'bulan_lunas_berurutan' => $berurutan,
+                'is_telat' => $is_telat,
+                'telat_bulan' => $telat_bulan,
+                'telat_nominal' => (int)$telat_nominal,
+                'telat_daftar_bulan' => $telat_daftar_bulan,
+                'telat_text' => $telat_text,
             ];
         } else {
             $result[$id_santri] = [
                 'status_key' => 'belum_lunas',
                 'status_text' => 'Belum lunas',
-                'badge' => 'warning',
+                'badge' => $is_telat ? 'danger' : 'warning',
                 'lunas_sampai' => null,
                 'bulan_lunas_tahun_berjalan' => $jumlah_lunas,
                 'bulan_lunas_berurutan' => 0,
+                'is_telat' => $is_telat,
+                'telat_bulan' => $telat_bulan,
+                'telat_nominal' => (int)$telat_nominal,
+                'telat_daftar_bulan' => $telat_daftar_bulan,
+                'telat_text' => $telat_text,
             ];
         }
     }
