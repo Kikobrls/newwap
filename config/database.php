@@ -5,10 +5,10 @@
  */
 
 // Database credentials
-define('DB_HOST', getenv('TPQ_DB_HOST') ?: 'sql107.infinityfree.com');
-define('DB_USER', getenv('TPQ_DB_USER') ?: 'if0_42666259');
-define('DB_PASS', getenv('TPQ_DB_PASS') ?: 'O7aa9LWHVYA');
-define('DB_NAME', getenv('TPQ_DB_NAME') ?: 'if0_42666259_siket');
+define('DB_HOST', getenv('TPQ_DB_HOST') ?: 'dk');
+define('DB_USER', getenv('TPQ_DB_USER') ?: 'fifv');
+define('DB_PASS', getenv('TPQ_DB_PASS') ?: 'ulya');
+define('DB_NAME', getenv('TPQ_DB_NAME') ?: 'iko');
 
 // Create connection
 $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASS, DB_NAME);
