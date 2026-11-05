@@ -43,6 +43,37 @@ $protocol_check = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'ht
 $host_check = $_SERVER['HTTP_HOST'] ?? 'localhost';
 define('APP_URL', $protocol_check . '://' . $host_check . $app_subfolder);
 
+// Refresh authenticated roles so deactivation / role changes apply to existing sessions.
+if (($_SESSION['login'] ?? false) === true) {
+    require_once __DIR__ . '/database.php';
+    $session_user_id = (int)($_SESSION['id_user'] ?? 0);
+    $session_user = mysqli_fetch_assoc(mysqli_query($conn,
+        "SELECT level, status FROM users WHERE id_user = $session_user_id"));
+    if (!$session_user || $session_user['status'] !== 'active') {
+        session_unset();
+        header('Location: ' . APP_URL . '/login.php');
+        exit;
+    }
+    $_SESSION['level'] = $session_user['level'];
+    if ($session_user['level'] === 'wali_santri') {
+        $route = substr($_SERVER['SCRIPT_NAME'] ?? '', strlen($app_subfolder));
+        if ($route === '/index.php' || $route === '/login.php') {
+            header('Location: ' . APP_URL . '/pages/wali/index.php');
+            exit;
+        }
+        if (!in_array($route, ['/pages/wali/index.php', '/logout.php'], true)) {
+            http_response_code(403);
+            if (strpos($route, '/api/') === 0) {
+                header('Content-Type: application/json; charset=utf-8');
+                echo json_encode(['error' => 'Akses hanya untuk portal santri Anda.']);
+            } else {
+                echo 'Akses ditolak. Silakan kembali ke portal wali santri.';
+            }
+            exit;
+        }
+    }
+}
+
 // Role based access control (RBAC)
 if (isset($_SESSION['login']) && isset($_SESSION['level'])) {
     $current_script = $_SERVER['SCRIPT_NAME'] ?? '';
@@ -245,6 +276,13 @@ function formatPeriodeTagihan($periode_tipe, $bulan, $tahun)
     return trim((string)$bulan . ' ' . (string)$tahun);
 }
 
+// Helper periode pembayaran (expandPeriodeBulanan, getSantriIuranBulananPaidState,
+// formatPeriodeKeyBulanan) dipisah ke includes/pembayaran_helpers.php agar halaman
+// pembayaran tetap jalan walaupun config/app.php di server masih versi lama.
+if (file_exists(__DIR__ . '/../includes/pembayaran_helpers.php')) {
+    require_once __DIR__ . '/../includes/pembayaran_helpers.php';
+}
+
 /**
  * Check table existence in current database.
  * Cached per-request in a static array — the schema doesn't change
@@ -303,7 +341,11 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
 {
     global $conn;
 
-    $year = $year ?: (int)date('Y');
+    $current_year = (int)date('Y');
+    $current_month = (int)date('n');
+    $year = $year ? (int)$year : $current_year;
+    $target_month = ($year < $current_year) ? 12 : (($year > $current_year) ? 0 : $current_month);
+
     $santri_ids = array_values(array_unique(array_filter(array_map('intval', (array)$santri_ids))));
     if (empty($santri_ids)) {
         return [];
@@ -318,6 +360,11 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
             'lunas_sampai' => null,
             'bulan_lunas_tahun_berjalan' => 0,
             'bulan_lunas_berurutan' => 0,
+            'is_telat' => false,
+            'telat_bulan' => 0,
+            'telat_nominal' => 0,
+            'telat_daftar_bulan' => [],
+            'telat_text' => null,
         ];
     }
 
@@ -354,16 +401,25 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
         FROM pembayaran
         WHERE id_santri IN ($id_list)
           AND periode_tipe = 'bulanan'
-          AND periode_key LIKE '" . (int)$year . "-%'
+          AND periode_key >= '" . (int)$year . "-01'
         GROUP BY id_santri, periode_key, id_iuran
     ");
 
     $paid_sum = [];
+    $max_paid_key = [];
     while ($sum_rows && ($row = mysqli_fetch_assoc($sum_rows))) {
         $id_santri = (int)$row['id_santri'];
-        $periode_key = $row['periode_key'];
+        $periode_key = (string)$row['periode_key'];
         $id_iuran = (int)$row['id_iuran'];
-        $paid_sum[$id_santri][$periode_key][$id_iuran] = (float)$row['total'];
+        $total = (float)$row['total'];
+        $paid_sum[$id_santri][$periode_key][$id_iuran] = $total;
+
+        $nominal_target = $fee_nominal[$id_santri][$id_iuran] ?? 0;
+        if ($nominal_target > 0 && $total >= $nominal_target) {
+            if (!isset($max_paid_key[$id_santri][$id_iuran]) || strcmp($periode_key, $max_paid_key[$id_santri][$id_iuran]) > 0) {
+                $max_paid_key[$id_santri][$id_iuran] = $periode_key;
+            }
+        }
     }
 
     foreach ($santri_ids as $id_santri) {
@@ -378,7 +434,9 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
             $is_complete = true;
             foreach ($fees as $id_iuran => $nominal) {
                 $total = $paid_sum[$id_santri][$periode_key][$id_iuran] ?? 0;
-                if ($total < $nominal) {
+                $latest_lunas_key = $max_paid_key[$id_santri][$id_iuran] ?? null;
+                // Bulan dianggap lunas jika dibayar penuh langsung ATAU ada bulan setelahnya yang sudah lunas
+                if ($total < $nominal && ($latest_lunas_key === null || strcmp($latest_lunas_key, $periode_key) < 0)) {
                     $is_complete = false;
                     break;
                 }
@@ -396,16 +454,57 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
             }
         }
 
+        for ($m = 1; $m <= $berurutan; $m++) {
+            $complete_months[$m] = true;
+        }
+
+        // Hitung keterlambatan / tunggakan sampai dengan bulan berjalan ($target_month)
+        $telat_bulan = 0;
+        $telat_nominal = 0.0;
+        $telat_daftar_bulan = [];
+        for ($m = 1; $m <= $target_month; $m++) {
+            if (empty($complete_months[$m])) {
+                $telat_bulan++;
+                $telat_daftar_bulan[] = bulanIndo($m);
+                $pk_m = $year . '-' . str_pad((string)$m, 2, '0', STR_PAD_LEFT);
+                foreach ($fees as $id_iuran => $nominal) {
+                    $latest_lunas_key = $max_paid_key[$id_santri][$id_iuran] ?? null;
+                    if ($latest_lunas_key !== null && strcmp($latest_lunas_key, $pk_m) >= 0) {
+                        continue;
+                    }
+                    $paid_m = $paid_sum[$id_santri][$pk_m][$id_iuran] ?? 0.0;
+                    $telat_nominal += max($nominal - $paid_m, 0.0);
+                }
+            }
+        }
+        $is_telat = ($telat_bulan > 0);
+        $telat_range = '';
+        if ($is_telat) {
+            if (count($telat_daftar_bulan) === 1) {
+                $telat_range = $telat_daftar_bulan[0];
+            } else {
+                $telat_range = $telat_daftar_bulan[0] . ' - ' . $telat_daftar_bulan[count($telat_daftar_bulan) - 1];
+            }
+        }
+        $telat_text = $is_telat
+            ? ('Telat ' . $telat_bulan . ' bln (' . $telat_range . ')')
+            : null;
+
         $jumlah_lunas = count($complete_months);
         if ($jumlah_lunas === 0) {
             $has_any_payment = !empty($paid_sum[$id_santri]);
             $result[$id_santri] = [
                 'status_key' => $has_any_payment ? 'belum_lunas' : 'belum_bayar',
                 'status_text' => $has_any_payment ? 'Belum lunas' : 'Belum ada pembayaran bulanan',
-                'badge' => $has_any_payment ? 'warning' : 'secondary',
+                'badge' => $is_telat ? 'danger' : ($has_any_payment ? 'warning' : 'secondary'),
                 'lunas_sampai' => null,
                 'bulan_lunas_tahun_berjalan' => 0,
                 'bulan_lunas_berurutan' => 0,
+                'is_telat' => $is_telat,
+                'telat_bulan' => $telat_bulan,
+                'telat_nominal' => (int)$telat_nominal,
+                'telat_daftar_bulan' => $telat_daftar_bulan,
+                'telat_text' => $telat_text,
             ];
             continue;
         }
@@ -418,15 +517,25 @@ function getSantriMonthlyProgressMap($santri_ids, $year = null)
                 'lunas_sampai' => $year . '-' . str_pad((string)$berurutan, 2, '0', STR_PAD_LEFT),
                 'bulan_lunas_tahun_berjalan' => $jumlah_lunas,
                 'bulan_lunas_berurutan' => $berurutan,
+                'is_telat' => $is_telat,
+                'telat_bulan' => $telat_bulan,
+                'telat_nominal' => (int)$telat_nominal,
+                'telat_daftar_bulan' => $telat_daftar_bulan,
+                'telat_text' => $telat_text,
             ];
         } else {
             $result[$id_santri] = [
                 'status_key' => 'belum_lunas',
                 'status_text' => 'Belum lunas',
-                'badge' => 'warning',
+                'badge' => $is_telat ? 'danger' : 'warning',
                 'lunas_sampai' => null,
                 'bulan_lunas_tahun_berjalan' => $jumlah_lunas,
                 'bulan_lunas_berurutan' => 0,
+                'is_telat' => $is_telat,
+                'telat_bulan' => $telat_bulan,
+                'telat_nominal' => (int)$telat_nominal,
+                'telat_daftar_bulan' => $telat_daftar_bulan,
+                'telat_text' => $telat_text,
             ];
         }
     }

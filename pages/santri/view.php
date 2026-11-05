@@ -51,9 +51,8 @@ if (!$data) {
 $monthly_progress = getSantriMonthlyProgress((int)$id);
 
 // Get payment history
-$history = mysqli_query($conn, "SELECT p.*, g.nama as nama_user, b.nama_iuran, b.periode_tipe
+$history = mysqli_query($conn, "SELECT p.*, b.nama_iuran, b.periode_tipe
                                FROM pembayaran p
-                               JOIN users g ON p.id_user = g.id_user
                                LEFT JOIN iuran b ON p.id_iuran = b.id_iuran
                                WHERE p.id_santri = '$id'
                                ORDER BY p.tgl_bayar DESC, p.id_pembayaran DESC");
@@ -134,6 +133,21 @@ $history = mysqli_query($conn, "SELECT p.*, g.nama as nama_user, b.nama_iuran, b
                             <div class="small text-muted mt-1">
                                 Lunas tahun berjalan: <?php echo (int)$monthly_progress['bulan_lunas_tahun_berjalan']; ?> bulan
                             </div>
+                            <?php if (!empty($monthly_progress['is_telat'])): ?>
+                            <div class="alert alert-danger py-2 px-3 mt-2 mb-0 small">
+                                <div class="fw-bold"><i class="fas fa-exclamation-triangle me-1"></i><?php echo htmlspecialchars($monthly_progress['telat_text']); ?></div>
+                                <?php if (!empty($monthly_progress['telat_nominal'])): ?>
+                                <div>Total tunggakan: <strong><?php echo formatRupiah($monthly_progress['telat_nominal']); ?></strong></div>
+                                <?php endif; ?>
+                                <?php if (!empty($monthly_progress['telat_daftar_bulan'])): ?>
+                                <div class="text-muted">Bulan belum lunas: <?php echo htmlspecialchars(implode(', ', $monthly_progress['telat_daftar_bulan'])); ?></div>
+                                <?php endif; ?>
+                            </div>
+                            <?php else: ?>
+                            <div class="small text-success fw-bold mt-1">
+                                <i class="fas fa-check-circle me-1"></i>Tidak ada keterlambatan pembayaran
+                            </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                     <div class="row no-gutters">

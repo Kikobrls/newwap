@@ -46,6 +46,13 @@ $queryResult = runServerSideQuery([
     'columns' => $columns,
 ]);
 
+$wali_links = [];
+if (appTableExists('wali_santri')) {
+    $links = mysqli_query($conn, 'SELECT id_user, id_santri FROM wali_santri');
+    while ($link = mysqli_fetch_assoc($links)) {
+        $wali_links[(int)$link['id_user']][] = (int)$link['id_santri'];
+    }
+}
 $no = $queryResult['start'] + 1;
 $data = [];
 foreach ($queryResult['rows'] as $row) {
@@ -57,7 +64,7 @@ foreach ($queryResult['rows'] as $row) {
     } elseif ($row['level'] == 'kepala_tpq') {
         $badge_color = 'warning';
     }
-    $level_text = $row['level'] == 'kepala_tpq' ? 'Kepala TPQ' : ucfirst($row['level']);
+    $level_text = $row['level'] == 'wali_santri' ? 'Wali Santri' : ($row['level'] == 'kepala_tpq' ? 'Kepala TPQ' : ucfirst($row['level']));
     $levelBadge = '<span class="badge bg-' . $badge_color . '">' . $level_text . '</span>';
 
     $statusBadge = '<span class="badge bg-' . ($row['status'] == 'active' ? 'success' : 'secondary') . '">'
@@ -72,6 +79,7 @@ foreach ($queryResult['rows'] as $row) {
         'no_telp' => $row['no_telp'],
         'level' => $row['level'],
         'status' => $row['status'],
+        'santri_ids' => $wali_links[$id] ?? [],
     ]), ENT_QUOTES, 'UTF-8');
 
     $aksi = '<div class="d-flex justify-content-center align-items-center">'

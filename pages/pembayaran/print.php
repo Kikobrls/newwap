@@ -19,11 +19,10 @@ if ($id_pembayaran <= 0) {
 }
 
 $payment = mysqli_fetch_assoc(mysqli_query($conn, "
-    SELECT p.*, s.nama, k.nama_kelas, g.nama_petugas as nama_petugas, b.nama_iuran
+    SELECT p.*, s.nama, k.nama_kelas, b.nama_iuran
     FROM pembayaran p
     JOIN santri s ON p.id_santri = s.id_santri
     JOIN kelas k ON s.id_kelas = k.id_kelas
-    JOIN petugas g ON p.id_petugas = g.id_petugas
     JOIN iuran b ON p.id_iuran = b.id_iuran
     WHERE p.id_pembayaran = '$id_pembayaran'
 "));
@@ -197,8 +196,6 @@ require_once '../../includes/kop_surat.php';
                     class="value"><?php echo htmlspecialchars($payment['nama']); ?></span></div>
             <div class="item"><span class="label">Kelas</span><span
                     class="value"><?php echo htmlspecialchars($payment['nama_kelas']); ?></span></div>
-            <div class="item"><span class="label">Petugas</span><span
-                    class="value"><?php echo htmlspecialchars($payment['nama_petugas']); ?></span></div>
         </div>
 
         <table>

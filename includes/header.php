@@ -90,10 +90,12 @@ $base_url = baseUrl();
                     </h6>
                     <div class="dropdown-divider"></div>
                     <!-- Adding setting link directly in user menu since it's a common placement -->
+                    <?php if (($_SESSION['level'] ?? '') !== 'wali_santri'): ?>
                     <a class="dropdown-item" href="<?php echo $base_url; ?>/pages/users/profile.php">
                         <div class="dropdown-item-icon"><i data-feather="user"></i></div>
                         Profile
                     </a>
+                    <?php endif; ?>
                     <a class="dropdown-item" href="<?php echo $base_url; ?>/logout.php">
                         <div class="dropdown-item-icon"><i data-feather="log-out"></i></div>
                         Logout

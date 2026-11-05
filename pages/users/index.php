@@ -18,6 +18,16 @@ if (($_SESSION['level'] ?? '') !== 'admin') {
     exit;
 }
 
+$wali_ready = appTableExists('wali_santri');
+if (empty($_SESSION['users_csrf'])) {
+    $_SESSION['users_csrf'] = bin2hex(random_bytes(32));
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' &&
+    (!is_string($_POST['csrf_token'] ?? null) || !hash_equals($_SESSION['users_csrf'], $_POST['csrf_token']))) {
+    http_response_code(403);
+    exit('Token keamanan tidak valid. Muat ulang halaman.');
+}
+
 // Handle delete - BEFORE any HTML output
 if (isset($_GET['delete'])) {
     $id = (int) $_GET['delete'];
@@ -47,7 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $status = sanitize($_POST['status'] ?? 'active');
     $password = $_POST['password'] ?? '';
 
-    $allowed_levels = ['admin', 'bendahara', 'kepala_tpq'];
+    $allowed_levels = ['admin', 'bendahara', 'kepala_tpq', 'wali_santri'];
     if (!in_array($level, $allowed_levels, true)) {
         $level = 'bendahara';
     }
@@ -55,7 +65,17 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         $status = 'active';
     }
 
-    if (empty($username) || empty($nama)) {
+    $santri_ids = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['santri_ids'] ?? [])), function ($id) { return $id > 0; })));
+    if ($level === 'wali_santri' && !$wali_ready) {
+        setFlash('danger', 'Jalankan migrasi 2026_11_05_add_wali_santri.sql terlebih dahulu.');
+    } elseif ($level === 'wali_santri' && !$santri_ids) {
+        setFlash('danger', 'Pilih minimal satu santri untuk akun wali.');
+    } elseif ($level === 'wali_santri' && (int)mysqli_fetch_assoc(mysqli_query($conn,
+        "SELECT COUNT(*) AS total FROM santri WHERE id_santri IN (" . implode(',', $santri_ids) . ")"))['total'] !== count($santri_ids)) {
+        setFlash('danger', 'Pilihan santri tidak valid.');
+    } elseif ($id_user === (int)$_SESSION['id_user'] && ($level !== 'admin' || $status !== 'active')) {
+        setFlash('danger', 'Anda tidak dapat menonaktifkan atau mengubah level akun admin yang sedang digunakan.');
+    } elseif (empty($username) || empty($nama)) {
         setFlash('danger', 'Username dan nama harus diisi!');
     } elseif ($id_user <= 0 && strlen($password) < 6) {
         setFlash('danger', 'Password minimal 6 karakter!');
@@ -93,11 +113,31 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $msg = 'diubah';
             }
 
-            if (mysqli_query($conn, $query)) {
-                logActivity("Menyimpan data pengguna ($msg)", 'users', $id_user ?: mysqli_insert_id($conn));
+            mysqli_begin_transaction($conn);
+            try {
+                if (!mysqli_query($conn, $query)) {
+                    throw new RuntimeException('Gagal menyimpan pengguna.');
+                }
+                $saved_id = $id_user ?: mysqli_insert_id($conn);
+                if ($wali_ready) {
+                    mysqli_query($conn, "DELETE FROM wali_santri WHERE id_user = $saved_id");
+                    if ($level === 'wali_santri') {
+                        $link = mysqli_prepare($conn, 'INSERT INTO wali_santri (id_user, id_santri) VALUES (?, ?)');
+                        foreach ($santri_ids as $santri_id) {
+                            mysqli_stmt_bind_param($link, 'ii', $saved_id, $santri_id);
+                            if (!mysqli_stmt_execute($link)) {
+                                throw new RuntimeException('Gagal menghubungkan santri.');
+                            }
+                        }
+                    }
+                }
+                logActivity("Menyimpan data pengguna ($msg)", 'users', $saved_id);
+                mysqli_commit($conn);
                 setFlash('success', "Data pengguna berhasil $msg!");
-            } else {
-                setFlash('danger', 'Gagal menyimpan data pengguna!');
+            } catch (Throwable $e) {
+                mysqli_rollback($conn);
+                error_log('Simpan pengguna: ' . $e->getMessage());
+                setFlash('danger', 'Gagal menyimpan data pengguna dan hubungan wali santri.');
             }
         }
     }
@@ -181,11 +221,10 @@ require_once '../../includes/topbar.php';
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="modalTitle">Tambah Pengguna</h5>
-                <button class="close" type="button" data-bs-dismiss="modal" aria-label="Close">
-                    <span aria-hidden="true">&times;</span>
-                </button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <form method="POST" action="">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['users_csrf']); ?>">
                 <div class="modal-body">
                     <input type="hidden" name="id_user" id="id_user">
                     <div class="row">
@@ -229,6 +268,7 @@ require_once '../../includes/topbar.php';
                                     <option value="admin">Admin</option>
                                     <option value="bendahara">Bendahara</option>
                                     <option value="kepala_tpq">Kepala TPQ</option>
+                                    <?php if ($wali_ready): ?><option value="wali_santri">Wali Santri</option><?php endif; ?>
                                 </select>
                             </div>
                         </div>
@@ -242,6 +282,18 @@ require_once '../../includes/topbar.php';
                             </div>
                         </div>
                     </div>
+                    <?php if ($wali_ready): ?>
+                    <div class="mb-3" id="waliSantriFields" hidden>
+                        <label for="santri_ids" class="form-label">Santri yang diasuh</label>
+                        <select name="santri_ids[]" id="santri_ids" class="form-select" multiple size="6">
+                            <?php $santri_options = mysqli_query($conn, 'SELECT s.id_santri, s.nama, k.nama_kelas FROM santri s LEFT JOIN kelas k ON k.id_kelas = s.id_kelas ORDER BY s.nama'); ?>
+                            <?php while ($s = mysqli_fetch_assoc($santri_options)): ?>
+                            <option value="<?php echo (int)$s['id_santri']; ?>"><?php echo htmlspecialchars($s['nama'] . ' — ' . $s['nama_kelas'] . ' (ID ' . $s['id_santri'] . ')'); ?></option>
+                            <?php endwhile; ?>
+                        </select>
+                        <small class="text-muted">Bisa pilih lebih dari satu (Ctrl/Cmd + klik). Wali hanya dapat melihat santri yang dipilih.</small>
+                    </div>
+                    <?php endif; ?>
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Batal</button>
@@ -257,6 +309,11 @@ $extra_js = '
 <script src="https://cdn.jsdelivr.net/npm/datatables.net@2/js/dataTables.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/datatables.net-bs5@2/js/dataTables.bootstrap5.min.js"></script>
 <script>
+function toggleWaliFields() {
+    const fields = document.getElementById("waliSantriFields");
+    if (fields) fields.hidden = document.getElementById("level").value !== "wali_santri";
+}
+document.getElementById("level").addEventListener("change", toggleWaliFields);
 function resetForm() {
     document.getElementById("modalTitle").textContent = "Tambah Pengguna";
     document.getElementById("id_user").value = "";
@@ -270,6 +327,9 @@ function resetForm() {
     document.getElementById("no_telp").value = "";
     document.getElementById("level").value = "bendahara";
     document.getElementById("status").value = "active";
+    const select = document.getElementById("santri_ids");
+    if (select) Array.from(select.options).forEach(option => option.selected = false);
+    toggleWaliFields();
 }
 
 function editUser(data) {
@@ -285,6 +345,9 @@ function editUser(data) {
     document.getElementById("no_telp").value = data.no_telp || "";
     document.getElementById("level").value = data.level;
     document.getElementById("status").value = data.status;
+    const select = document.getElementById("santri_ids");
+    if (select) Array.from(select.options).forEach(option => option.selected = (data.santri_ids || []).map(String).includes(option.value));
+    toggleWaliFields();
     $("#userModal").modal("show");
 }
 

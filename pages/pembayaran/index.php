@@ -235,7 +235,6 @@ $bulan_list = [
                             <th>Periode</th>
                             <th>Tagihan/Iuran</th>
                             <th>Jumlah</th>
-                            <th>Pengguna</th>
                             <th>Aksi</th>
                         </tr>
                     </thead>
@@ -278,8 +277,7 @@ $(function () {
             { data: 4, orderable: false },
             { data: 5 },
             { data: 6, className: "text-end" },
-            { data: 7 },
-            { data: 8, orderable: false, searchable: false, className: "text-center" }
+            { data: 7, orderable: false, searchable: false, className: "text-center" }
         ],
         order: [[1, "desc"]],
         initComplete: function () {
