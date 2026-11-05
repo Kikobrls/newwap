@@ -34,6 +34,12 @@ if (!function_exists('nav_active')) {
             <div class="sidenav-menu">
                 <div class="nav accordion" id="accordionSidenav">
 
+                    <?php if (($_SESSION['level'] ?? '') === 'wali_santri'): ?>
+                    <div class="sidenav-menu-heading">Wali Santri</div>
+                    <a class="nav-link active" href="<?php echo $base_url; ?>/pages/wali/index.php"><div class="nav-link-icon"><i data-feather="home"></i></div>Portal Wali Santri</a>
+                    <a class="nav-link" href="<?php echo $base_url; ?>/pages/wali/index.php#tagihan"><div class="nav-link-icon"><i data-feather="bell"></i></div>Tagihan &amp; Pengingat</a>
+                    <a class="nav-link" href="<?php echo $base_url; ?>/pages/wali/index.php#riwayat"><div class="nav-link-icon"><i data-feather="clock"></i></div>Riwayat Pembayaran</a>
+                    <?php else: ?>
                     <div class="sidenav-menu-heading">Menu Utama</div>
                     <a class="nav-link <?php echo nav_active('dashboard', $current_path); ?>" href="<?php echo $base_url; ?>/index.php">
                         <div class="nav-link-icon"><i data-feather="activity"></i></div>
@@ -90,6 +96,7 @@ if (!function_exists('nav_active')) {
                     </a>
                     <?php endif; ?>
 
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -99,7 +106,9 @@ if (!function_exists('nav_active')) {
                     <div class="sidenav-footer-title">
                         <?php
                         $level_display = $_SESSION['level'] ?? '';
-                        if ($level_display == 'kepala_tpq') {
+                        if ($level_display == 'wali_santri') {
+                            echo 'Wali Santri';
+                        } elseif ($level_display == 'kepala_tpq') {
                             echo 'Kepala TPQ';
                         } else {
                             echo ucfirst(htmlspecialchars($level_display));

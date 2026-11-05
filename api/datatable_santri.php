@@ -61,7 +61,7 @@ $ids = array_map('intval', array_column($queryResult['rows'], 'id_santri'));
 $monthlyMap = getSantriMonthlyProgressMap($ids);
 $yearlyMap = getSantriYearlyProgressMap($ids);
 
-function dtBadge(?array $progress): string
+function dtBadge(?array $progress, bool $showTelat = false): string
 {
     if (!$progress) {
         return '<span class="badge bg-secondary text-white badge-status">-</span>';
@@ -72,8 +72,15 @@ function dtBadge(?array $progress): string
     }
     $bg = $progress['badge'];
     $textClass = in_array($bg, ['warning', 'info', 'light'], true) ? 'text-dark' : 'text-white';
-    return '<span class="badge bg-' . htmlspecialchars($bg) . ' ' . $textClass . ' badge-status">'
+    $html = '<span class="badge bg-' . htmlspecialchars($bg) . ' ' . $textClass . ' badge-status">'
         . htmlspecialchars($text) . '</span>';
+
+    if ($showTelat && !empty($progress['is_telat']) && !empty($progress['telat_text'])) {
+        $nominalText = !empty($progress['telat_nominal']) ? ' &bull; ' . formatRupiah($progress['telat_nominal']) : '';
+        $html .= '<div class="small text-danger fw-bold mt-1"><i class="fas fa-exclamation-circle me-1"></i>'
+            . htmlspecialchars($progress['telat_text']) . $nominalText . '</div>';
+    }
+    return $html;
 }
 
 $no = $queryResult['start'] + 1;
@@ -112,7 +119,7 @@ foreach ($queryResult['rows'] as $row) {
         '<span class="font-weight-bold text-primary">' . htmlspecialchars($row['nama']) . '</span>',
         $umur,
         htmlspecialchars($row['nama_kelas']),
-        dtBadge($monthlyMap[$id] ?? null),
+        dtBadge($monthlyMap[$id] ?? null, true),
         dtBadge($yearlyMap[$id] ?? null),
         '<div class="text-center">' . $statusBadge . '</div>',
         $aksi,

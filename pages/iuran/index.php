@@ -11,6 +11,19 @@ if (session_status() === PHP_SESSION_NONE) {
 require_once '../../config/app.php';
 require_once '../../config/database.php';
 
+// Authorize before handling mutations, not after rendering the header.
+if (($_SESSION['login'] ?? false) !== true || ($_SESSION['level'] ?? '') !== 'admin') {
+    http_response_code(403);
+    exit('Hanya admin yang dapat mengelola iuran.');
+}
+if (empty($_SESSION['iuran_csrf'])) $_SESSION['iuran_csrf'] = bin2hex(random_bytes(32));
+if ($_SERVER['REQUEST_METHOD'] === 'POST' &&
+    (!is_string($_POST['csrf_token'] ?? null) || !hash_equals($_SESSION['iuran_csrf'], $_POST['csrf_token']))) {
+    http_response_code(403);
+    exit('Token keamanan tidak valid. Muat ulang halaman.');
+}
+$due_ready = appColumnExists('iuran', 'jatuh_tempo_hari');
+
 // Handle delete - BEFORE any HTML output
 if (isset($_GET['delete'])) {
     $id = (int) $_GET['delete'];
@@ -48,8 +61,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     }
     $nominal = (float) str_replace(['.', ','], ['', '.'], preg_replace('/[^\d.,]/', '', $_POST['nominal'] ?? '0'));
     $keterangan = sanitize($_POST['keterangan'] ?? '');
+    $due_day = (int)($_POST['jatuh_tempo_hari'] ?? 10);
+    $due_month = (int)($_POST['jatuh_tempo_bulan'] ?? 7);
 
-    if (empty($nama_iuran)) {
+    if ($due_day < 1 || $due_day > 31 || $due_month < 1 || $due_month > 12) {
+        setFlash('danger', 'Tanggal jatuh tempo harus 1–31 dan bulan 1–12.');
+    } elseif (empty($nama_iuran)) {
         setFlash('danger', 'Nama iuran harus diisi!');
     } elseif ($tahun <= 0) {
         setFlash('danger', 'Tahun harus diisi dengan benar!');
@@ -73,6 +90,16 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $msg = 'diubah';
         }
 
+        if ($due_ready) {
+            if ($id_iuran <= 0) {
+                $query = "INSERT INTO iuran (nama_iuran, tahun, periode_tipe, nominal, keterangan, jatuh_tempo_hari, jatuh_tempo_bulan)
+                          VALUES ('$nama_iuran', '$tahun', '$periode_tipe', '$nominal', '$keterangan', $due_day, $due_month)";
+            } else {
+                $query = "UPDATE iuran SET nama_iuran = '$nama_iuran', tahun = '$tahun', periode_tipe = '$periode_tipe',
+                          nominal = '$nominal', keterangan = '$keterangan', jatuh_tempo_hari = $due_day,
+                          jatuh_tempo_bulan = $due_month WHERE id_iuran = $id_iuran";
+            }
+        }
         if (mysqli_query($conn, $query)) {
             logActivity("Menyimpan data iuran ($msg)", 'iuran', $id_iuran ?: mysqli_insert_id($conn));
             setFlash('success', "Data iuran berhasil $msg! Nominal: " . formatRupiah($nominal) . ".");
@@ -160,11 +187,10 @@ require_once '../../includes/topbar.php';
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="modalTitle">Tambah Iuran</h5>
-                <button class="close" type="button" data-bs-dismiss="modal" aria-label="Close">
-                    <span aria-hidden="true">&times;</span>
-                </button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <form method="POST" action="">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['iuran_csrf']); ?>">
                 <div class="modal-body">
                     <input type="hidden" name="id_iuran" id="id_iuran">
                     <div class="form-group mb-3">
@@ -194,6 +220,13 @@ require_once '../../includes/topbar.php';
                         <label>Nominal (Rp) <span class="text-danger">*</span></label>
                         <input type="number" name="nominal" id="nominal" class="form-control" min="0" step="500" required>
                     </div>
+                    <?php if ($due_ready): ?>
+                    <div class="row mb-3">
+                        <div class="col-6"><label for="jatuh_tempo_hari">Tanggal jatuh tempo</label><input type="number" class="form-control" name="jatuh_tempo_hari" id="jatuh_tempo_hari" min="1" max="31" value="10" required></div>
+                        <div class="col-6"><label for="jatuh_tempo_bulan">Bulan (iuran tahunan)</label><select class="form-select" name="jatuh_tempo_bulan" id="jatuh_tempo_bulan"><?php foreach ($bulan_indo as $i => $bulan): ?><option value="<?php echo $i + 1; ?>" <?php echo $i === 6 ? 'selected' : ''; ?>><?php echo $bulan; ?></option><?php endforeach; ?></select></div>
+                        <small class="text-muted mt-2">Iuran bulanan jatuh tempo setiap bulan. Tanggal 29–31 disesuaikan dengan hari terakhir bulan. Pengingat di portal mulai 7 hari sebelumnya.</small>
+                    </div>
+                    <?php endif; ?>
                     <div class="form-group mb-3">
                         <label>Keterangan</label>
                         <textarea name="keterangan" id="keterangan" class="form-control" rows="2"></textarea>
@@ -221,6 +254,10 @@ function resetForm() {
     document.getElementById("tahun").value = "' . date('Y') . '";
     document.getElementById("nominal").value = "";
     document.getElementById("keterangan").value = "";
+    if (document.getElementById("jatuh_tempo_hari")) {
+        document.getElementById("jatuh_tempo_hari").value = 10;
+        document.getElementById("jatuh_tempo_bulan").value = 7;
+    }
 }
 
 function editIuran(data) {
@@ -231,6 +268,10 @@ function editIuran(data) {
     document.getElementById("tahun").value = data.tahun;
     document.getElementById("nominal").value = parseFloat(data.nominal);
     document.getElementById("keterangan").value = data.keterangan || "";
+    if (document.getElementById("jatuh_tempo_hari")) {
+        document.getElementById("jatuh_tempo_hari").value = data.jatuh_tempo_hari || 10;
+        document.getElementById("jatuh_tempo_bulan").value = data.jatuh_tempo_bulan || 7;
+    }
     $("#iuranModal").modal("show");
 }
 

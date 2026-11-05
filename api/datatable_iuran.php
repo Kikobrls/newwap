@@ -34,9 +34,10 @@ $columns = [
     ['db' => null,             'search' => false, 'order' => false], // Aksi
 ];
 
+$due_select = appColumnExists('iuran', 'jatuh_tempo_hari') ? 'b.jatuh_tempo_hari, b.jatuh_tempo_bulan,' : '';
 $queryResult = runServerSideQuery([
     'conn' => $conn,
-    'select' => "b.id_iuran, b.nama_iuran, b.periode_tipe, b.tahun, b.nominal, b.keterangan,
+    'select' => "b.id_iuran, b.nama_iuran, b.periode_tipe, b.tahun, b.nominal, b.keterangan, $due_select
                  COUNT(s.id_santri) as jumlah_santri",
     'from' => "iuran b LEFT JOIN santri s ON b.id_iuran = s.id_iuran",
     'group_by' => 'b.id_iuran',
@@ -56,6 +57,8 @@ foreach ($queryResult['rows'] as $row) {
         'periode_tipe' => $periode_tipe,
         'nominal' => $row['nominal'],
         'keterangan' => $row['keterangan'],
+        'jatuh_tempo_hari' => $row['jatuh_tempo_hari'] ?? 10,
+        'jatuh_tempo_bulan' => $row['jatuh_tempo_bulan'] ?? 7,
     ]), ENT_QUOTES, 'UTF-8');
 
     $tipeBadge = '<span class="badge bg-' . ($periode_tipe == 'tahunan' ? 'warning' : 'primary') . '">'

@@ -98,7 +98,7 @@ if (isset($_POST['change_password'])) {
 // Get activity statistics
 $stats = mysqli_fetch_assoc(mysqli_query($conn, "
     SELECT COALESCE(SUM(jumlah_bayar), 0) as total_pembayaran
-    FROM pembayaran WHERE id_user = '$id_user'
+    FROM pembayaran
 "));
 ?>
 

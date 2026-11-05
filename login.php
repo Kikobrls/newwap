@@ -30,6 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         if (mysqli_num_rows($result) == 1) {
             $user = mysqli_fetch_assoc($result);
             if (password_verify($password, $user['password'])) {
+                session_regenerate_id(true);
                 $_SESSION['login'] = true;
                 $_SESSION['id_user'] = $user['id_user'];
                 $_SESSION['username'] = $user['username'];
@@ -37,7 +38,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $_SESSION['level'] = $user['level'];
                 mysqli_query($conn, "UPDATE users SET last_login = NOW() WHERE id_user = " . $user['id_user']);
                 logActivity('Login ke sistem', 'users', $user['id_user']);
-                header("Location: index.php");
+                header("Location: " . ($user['level'] === 'wali_santri' ? 'pages/wali/index.php' : 'index.php'));
                 exit;
             } else {
                 $error = "Password salah!";
@@ -112,6 +113,7 @@ if ($script_dir !== '/') {
                                     <img src="<?php echo $base_url; ?>/assets/img/logo.jpg" alt="Logo" class="school-logo" onerror="this.src='<?php echo $base_url; ?>/assets/img/undraw_profile.svg'">
                                     <h3 class="fw-light my-1"><?php echo htmlspecialchars($nama_sekolah); ?></h3>
                                     <p class="small text-muted mb-0">Sistem Administrasi Keuangan</p>
+                                    <p class="small text-muted mt-2 mb-0">Wali santri: masuk menggunakan akun dari admin untuk melihat pembayaran dan pengingat iuran.</p>
                                 </div>
                                 <div class="card-body px-4 pb-4">
                                     <?php if ($error): ?>

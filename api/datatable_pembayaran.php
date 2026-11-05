@@ -53,19 +53,17 @@ $columns = [
     ['db' => "CONCAT_WS(' ', p.bulan_dibayar, p.tahun_dibayar, p.periode_tipe)",   'search' => true,  'order' => false], // 4: Periode (Bulan, Tahun, Tipe)
     ['db' => "CONCAT_WS(' ', b.nama_iuran, b.tahun)",                             'search' => true,  'order' => true],  // 5: Tagihan/Iuran
     ['db' => 'p.jumlah_bayar',                                                    'search' => false, 'order' => true],  // 6: Jumlah
-    ['db' => 'g.nama',                                                            'search' => true,  'order' => true],  // 7: Pengguna
     ['db' => null,                                                                'search' => false, 'order' => false], // 8: Aksi
 ];
 
 $queryResult = runServerSideQuery([
     'conn' => $conn,
     'select' => "p.id_pembayaran, p.tgl_bayar, p.jumlah_bayar, p.periode_tipe, p.bulan_dibayar, p.tahun_dibayar,
-                 s.nama AS nama_santri, k.nama_kelas, b.nama_iuran, b.tahun AS tahun_iuran, g.nama AS nama_user",
+                 s.nama AS nama_santri, k.nama_kelas, b.nama_iuran, b.tahun AS tahun_iuran",
     'from' => "pembayaran p
                JOIN santri s ON p.id_santri = s.id_santri
                JOIN kelas k ON s.id_kelas = k.id_kelas
-               JOIN iuran b ON p.id_iuran = b.id_iuran
-               LEFT JOIN users g ON p.id_user = g.id_user",
+               JOIN iuran b ON p.id_iuran = b.id_iuran",
     'where' => $where,
     'columns' => $columns,
 ]);
@@ -92,7 +90,6 @@ foreach ($queryResult['rows'] as $row) {
         htmlspecialchars($periode),
         $tagihan,
         '<span class="font-weight-bold text-success">' . formatRupiah($row['jumlah_bayar']) . '</span>',
-        htmlspecialchars($row['nama_user'] ?: '-'),
         $aksi,
     ];
 }

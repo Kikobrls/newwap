@@ -127,9 +127,7 @@ $spp_list = mysqli_query($conn, "SELECT * FROM spp ORDER BY tahun DESC");
     <?php if ($import_result): ?>
         <div class="alert alert-<?php echo $import_result['type']; ?> alert-dismissible fade show" role="alert">
             <?php echo $import_result['message']; ?>
-            <button type="button" class="close" data-bs-dismiss="alert" aria-label="Close">
-                <span aria-hidden="true">&times;</span>
-            </button>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
         </div>
     <?php endif; ?>
 
